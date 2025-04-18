@@ -981,64 +981,38 @@ def load_partial_state_dict(model: t.nn.Module, checkpoint_path: str, verbose: b
     model_dict.update(filtered_dict)
     model.load_state_dict(model_dict)
 
+def build_mask_table(words):
+    V = len(words)
+    mask_ids = np.empty((V, V), dtype=np.int16)
+    for i in range(V):
+        for j in range(V):
+            m = get_mask(words[i], words[j])     
+            code = m[0] + 3*(m[1] + 3*(m[2] + 3*(m[3] + 3*m[4])))
+            mask_ids[i, j] = code
+    return mask_ids
 
-def expected_entropy_drop(env, guess_word):
+def expected_entropy_drop_fast(env, guess_idx):
     """
-    For a candidate guess_word, compute the average drop in log(|C|) across
-    all possible secret words in the current candidate set.
+    Fast O(|C|) expected log‑|C| drop using precomputed mask_table.
     """
-    C = list(env.remaining_candidates)
-    old_log = math.log(len(C))
-    total_drop = 0.0
+    C_idxs = np.array([word2idx[w] for w in env.remaining_candidates], dtype=int)
+    old_log = math.log(len(C_idxs))
 
-    for secret in C:
-        mask = get_mask(guess_word, secret)
-        new_C = [w for w in C if get_mask(guess_word, w) == mask]
-        new_log = math.log(len(new_C)) if new_C else 0.0
-        total_drop += (old_log - new_log)
-
-    return total_drop / len(C)
+    row = mask_table[guess_idx, C_idxs]      
+    vals, counts = np.unique(row, return_counts=True)
+    return ((old_log - np.log(counts)) * (counts / len(C_idxs))).sum()
 
 def expert_action(env):
     """
-    Scan through the current candidate set and pick the word
-    that maximizes expected entropy drop.
-    Returns the integer action index.
+    Scan only remaining candidates; pick index with highest expected drop.
     """
-    best_idx, best_score = None, -1e9
-    for idx, w in enumerate(env.words):
-        if w not in env.remaining_candidates:
-            continue
-        score = expected_entropy_drop(env, w)
+    best_idx, best_score = None, -1.0
+    for w in env.remaining_candidates:
+        idx = word2idx[w]
+        score = expected_entropy_drop_fast(env, idx)
         if score > best_score:
-            best_score = score
-            best_idx = idx
+            best_score, best_idx = score, idx
     return best_idx
-
-
-def generate_expert_dataset(env, preprocess_obs, num_episodes=100):
-    """
-    Runs `num_episodes` games with the expert policy, and
-    returns two tensors:
-      - states:    [N, D] float32
-      - actions:   [N]   int64
-    where N = total number of steps over all episodes, D = obs_dim.
-    """
-    states, actions = [], []
-
-    for ep in range(num_episodes):
-        obs, _ = env.reset()
-        done = False
-        while not done:
-            s_t = preprocess_obs(obs).cpu()        
-            states.append(s_t)
-            a = expert_action(env)
-            actions.append(a)
-            obs, _, terminated, truncated, _ = env.step(a)
-            done = terminated or truncated
-    states = torch.vstack(states)    
-    actions = torch.tensor(actions, dtype=torch.long)
-    return states, actions
 
 def behavioral_clone(actor, decoder, 
                      states, actions, 
@@ -1066,8 +1040,6 @@ def behavioral_clone(actor, decoder,
         avg = total_loss / len(dataset)
         print(f"[BC] Epoch {epoch}/{epochs} — loss {avg:.4f}")
 
-
-
 args = PPOArgs(
     env_id="Wordle1000-v0",
     num_envs=8,
@@ -1080,6 +1052,10 @@ args = PPOArgs(
 trainer = PPOTrainer(args)
 env0 = get_inner_env(trainer.envs.envs[0])  
 
+raw_env = get_inner_env(trainer.envs.envs[0])
+words   = raw_env.words
+word2idx = {w:i for i,w in enumerate(words)}
+mask_table = build_mask_table(words)
 
 bc_states, bc_actions = generate_expert_dataset(
     env0, preprocess_obs, num_episodes=200
