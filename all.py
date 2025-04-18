@@ -928,8 +928,6 @@ class PPOTrainer:
 			
 register_all_wordle_envs()
 
-register_all_wordle_envs()
-
 def evaluate_agent(agent, env, words, num_episodes=5):
     successes = 0
     total_guesses = 0
@@ -985,11 +983,6 @@ def load_partial_state_dict(model: t.nn.Module, checkpoint_path: str, verbose: b
 
     model_dict.update(filtered_dict)
     model.load_state_dict(model_dict)
-	
-import math
-import torch
-from torch.utils.data import TensorDataset, DataLoader
-from torch import nn
 
 
 def expected_entropy_drop(env, guess_word):
