@@ -12,4 +12,5 @@ Changes to make to this implementation:
 - Explore less rich state w/ transformer or recurrent block (or just project down to a lower dimensional state before dot product with decoder or just use a sparse autoencoder) 
 - Explore playing around with recent fails queue -> didn't help me but it apparently did help Andrew Ho
 - Explore whether or not to connect actor and critic instead of keeping them separate -> separate had empirically better results but that may be downstream of other changes because intuitively it feels like a combined network makes more sense here
-- Any other ways to cut out some of the heuristics I used based on the game itself while having similar training time -> especially in terms of encoding state 
+- Any other ways to cut out some of the heuristics I used based on the game itself while having similar training time -> especially in terms of encoding state
+- General clean up into multiple different files
