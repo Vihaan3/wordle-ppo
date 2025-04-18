@@ -285,7 +285,8 @@ def get_inner_env(env):
     return env
 
 """PPO Implementation code, heavily inspired by ARENA's Implementation but tweaked for Wordle:
-https://arena-chapter2-rl.streamlit.app/. Comments have been left to describe those tweaks."""
+https://arena-chapter2-rl.streamlit.app/. Original comments have been mostly left in and additional comments have been added
+to describe the most important tweaks."""
 @dataclass
 class PPOArgs:
 
@@ -662,9 +663,9 @@ class PPOAgent(nn.Module):
         with t.inference_mode():
           state_embedding = self.actor(obs)
           logits = self.decoder(state_embedding)
-          if isinstance(self.next_obs, dict):  # Mask out guessed words
-            guessed = self.next_obs["guessed"]  # shape [num_envs, vocab_size]
-            logits = logits.masked_fill(guessed.bool(), -1e9)
+          if isinstance(self.next_obs, dict): 
+		guessed = t.as_tensor(self.next_obs["guessed"], device=logits.device).bool()
+		logits = logits.masked_fill(guessed, -1e9)
         probs = Categorical(logits=logits)
         actions = probs.sample()
 
