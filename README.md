@@ -1,5 +1,5 @@
 # wordle-ppo
-Extends the general concept from [here](https://github.com/andrewkho/wordle-solver/tree/4495ae13ca31ae0f9784b847e34d7ef4117a1819) to solve Wordle with PPO. Base PPO code from [here](arena3-chapter2-rl.streamlit.app) (the PPO chapter) but moderately modified for Wordle. This was originally developed entirely in a single Jupyter Notebook with no thought for quality, proper documentation, or modularity, so the code will be messy and convuluted until cleaned up once all the additional polishing touches (below) are implemented. 
+Extends the general concept from [here](https://github.com/andrewkho/wordle-solver/tree/4495ae13ca31ae0f9784b847e34d7ef4117a1819) to solve Wordle with PPO (of course I could've just used an entropy drop heuristic to solve it in like 70 lines but where's the fun in that). Base PPO code from [here](arena3-chapter2-rl.streamlit.app) (the PPO chapter) but moderately modified for Wordle. This was originally developed entirely in a single Jupyter Notebook with no thought for quality, proper documentation, or modularity, so the code will be messy and convuluted until cleaned up once all the additional polishing touches (below) are implemented. 
 
 Major changes from Andrew Ho:
 - Uses PPO instead of A2C, obviously
