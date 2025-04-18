@@ -943,8 +943,9 @@ def evaluate_agent(agent, env, words, num_episodes=5):
                 logits = agent.decoder(state_emb)
 
                 if isinstance(obs, dict) and "guessed" in obs:
-                    guessed = obs["guessed"]
-                    logits[0, guessed.bool()] = -1e9
+                    guessed = t.as_tensor(guessed, device=logits.device).bool()
+		    logits[0, guessed] = -1e9
+
 
                 action = t.argmax(logits, dim=-1).item()
 
