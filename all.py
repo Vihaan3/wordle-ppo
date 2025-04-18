@@ -832,7 +832,6 @@ class PPOTrainer:
                 if isinstance(info, dict) and "episode" in info: # Changed from info.keys() to info
                   last_episode_len = info["episode"]["l"]
                   last_episode_return = info["episode"]["r"]
-                  print(f"[wandb debug] Step {self.agent.step} | Return: {last_episode_return}")
                   if self.args.use_wandb: wandb.log({
                       "episode_length": last_episode_len,
                       "episode_return": last_episode_return
@@ -863,7 +862,7 @@ class PPOTrainer:
         '''
         Handles learning phase for a single minibatch. Returns objective function to be maximized.
         '''
-        # Preprocess the observation (handles both dict and tensor)
+        # handles both dict and tensor
         obs = preprocess_obs(minibatch.observations)
 
         state_emb = self.agent.actor(obs)         # [B, 130]
@@ -900,8 +899,6 @@ class PPOTrainer:
             ), step=self.agent.step)
 
         return total_objective_function
-
-
 
     def train(self) -> None:
 
@@ -1084,13 +1081,10 @@ trainer = PPOTrainer(args)
 env0 = get_inner_env(trainer.envs.envs[0])  
 
 
-print("Generating expert dataset…")
 bc_states, bc_actions = generate_expert_dataset(
     env0, preprocess_obs, num_episodes=200
 )
 
-
-print("Running Behavioral Cloning warm‑start…")
 behavioral_clone(
     trainer.agent.actor, 
     trainer.agent.decoder,
@@ -1103,10 +1097,10 @@ behavioral_clone(
 print("Starting PPO finetuning…")
 trainer.train()
 
-import os
-
 CURRICULUM_STAGES = [
-    ("Wordle100-v0", 1_000_000),
+    ("Wordle100-v0", 5_000_000),
+    ("Wordle1000-v0, 5_000_000),
+    ("WordleFull-v0, 5_000_000) 
 ]
 
 SAVE_DIR = "checkpoints"
