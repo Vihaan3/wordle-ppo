@@ -1,3 +1,4 @@
+#32 lines of imports lol
 import os
 import sys
 import time
@@ -7,7 +8,6 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Literal, Union, Optional
-
 import numpy as np
 from numpy.random import Generator
 import torch as t
@@ -17,57 +17,65 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
 from torch.utils.data import TensorDataset, DataLoader
-
 import gymnasium as gym
 from gymnasium import spaces
 import gymnasium.envs.registration
 from gymnasium.envs.classic_control.cartpole import CartPoleEnv
 from gymnasium.wrappers import RecordEpisodeStatistics
-
 from tqdm import tqdm
 import einops
 import wandb
 import string
 import collections
 import matplotlib.pyplot as plt
-
 from IPython.display import clear_output
 from matplotlib.animation import FuncAnimation
 from jaxtyping import Float, Int
-
 
 warnings.filterwarnings('ignore')
 Arr = np.ndarray
 
 device = t.device("cuda" if t.cuda.is_available() else "cpu")
 
+import numpy as np
+import gymnasium as gym
+from gymnasium import spaces
+from typing import List, Optional, Union
+import string
+import collections
+import functools
+import os
 
-def load_words(n: int = None, path: str = "wordle_words.txt", seed: int = None) -> list[str]:
+def load_words(path: str = "wordle_words.txt", num_words: int = None) -> list[str]:
     """
-    Load a word list from file and return a random sample of `n` words.
-    If `n` is None, returns the full list.
+    Loads words; specifically note that it is *not* random (for the sake of being able to scale reward signal on envs of different sizes).
     """
     with open(path, "r") as f:
         lines = [line.strip().upper() for line in f.readlines()]
         words = [word for word in lines if len(word) == 5 and word.isalpha()]
 
-        rng = random.Random(seed) if seed is not None else random
-        if n is not None and n < len(words):
-            return rng.sample(words, n)
-        return words
-
-"""Env Code: Heavily inspired by Andrew Kho: 
+        words.sort()
+    n = num_words
+    if n is not None and n < len(words):
+        return words[:n]
+    return words
+    
+"""Env Code: Inspired by Andrew Kho;s setup: 
 https://github.com/andrewkho/wordle-solver/tree/4495ae13ca31ae0f9784b847e34d7ef4117a1819/deep_rl/wordle"""
 
 WORDLE_CHARS = string.ascii_uppercase  
-WORDLE_N = 5  
-REWARD_WIN = 20
+WORDLE_N = 5
+REWARD_WIN = 75
 REWARD_REPEAT_PENALTY = -30
+REWARD_LOSE = -30
+GREEN_REWARD = 5
+YELLOW_REWARD = 2
+ENTROP_DROP_REWARD = 6
 
 CharIndex = {c: i for i, c in enumerate(WORDLE_CHARS)}
 
 def get_state_shape(max_turns: int):
-    return [max_turns] + [2] * len(WORDLE_CHARS) + [2] * 3 * WORDLE_N * len(WORDLE_CHARS)
+    return [max_turns + 1] + [2] * len(WORDLE_CHARS) + [2] * 3 * WORDLE_N * len(WORDLE_CHARS)
 
 def new_state(max_turns: int) -> np.ndarray:
     return np.array(
@@ -85,28 +93,21 @@ YES = 2
 def get_mask(word: str, goal_word: str) -> List[int]:
     mask = [0] * len(word)
     goal_char_counts = collections.Counter(goal_word)
-
     for i in range(len(word)):
         if word[i] == goal_word[i]:
             mask[i] = 2
             goal_char_counts[word[i]] -= 1
-
     for i in range(len(word)):
-        if mask[i] != 0:
-            continue
-        if word[i] in goal_char_counts and goal_char_counts[word[i]] > 0:
+        if mask[i] == 0 and word[i] in goal_char_counts and goal_char_counts[word[i]] > 0:
             mask[i] = 1
             goal_char_counts[word[i]] -= 1
-
     return mask
 
 def update_from_mask(state: np.ndarray, word: str, mask: List[int]) -> np.ndarray:
     state = state.copy()
     state[0] -= 1
-
     prior_yes = []
     prior_maybe = []
-
     for i, c in enumerate(word):
         cint = CharIndex[c]
         offset = 1 + len(WORDLE_CHARS) + cint * WORDLE_N * 3
@@ -118,36 +119,38 @@ def update_from_mask(state: np.ndarray, word: str, mask: List[int]) -> np.ndarra
                 if ocint != cint:
                     oc_offset = 1 + len(WORDLE_CHARS) + ocint * WORDLE_N * 3
                     state[oc_offset + 3 * i:oc_offset + 3 * i + 3] = [1, 0, 0]
-
-    for i, c in enumerate(word):
-        cint = CharIndex[c]
+    for i in range(len(word)):
+        cint = CharIndex[word[i]]
         offset = 1 + len(WORDLE_CHARS) + cint * WORDLE_N * 3
         if mask[i] == SOMEWHERE:
-            prior_maybe.append(c)
+            prior_maybe.append(word[i])
             state[offset + 3 * i:offset + 3 * i + 3] = [1, 0, 0]
         elif mask[i] == NO:
-            if c in prior_maybe:
+            if word[i] in prior_maybe:
                 state[offset + 3 * i:offset + 3 * i + 3] = [1, 0, 0]
-            elif c in prior_yes:
+            elif word[i] in prior_yes:
                 for j in range(WORDLE_N):
                     if state[offset + 3 * j + 1] == 1:
                         state[offset + 3 * j:offset + 3 * j + 3] = [1, 0, 0]
             else:
                 state[offset:offset + 3 * WORDLE_N] = [1, 0, 0] * WORDLE_N
-
     return state
 
 class MinimalWordleEnv(gym.Env):
-    def __init__(self, words: List[str], max_turns: int = 6):
+    def __init__(self, words: List[str], max_turns: int = 6, goal_pool_size: Optional[int] = None):
         super().__init__()
         self.words = words
         self.max_turns = max_turns
         self.action_space = spaces.Discrete(len(self.words))
-
         self.observation_space = spaces.Dict({
             "state": spaces.MultiDiscrete(get_state_shape(max_turns)),
             "guessed": spaces.MultiBinary(len(self.words)),
         })
+
+        if goal_pool_size is None:
+            self.goal_pool = self.words
+        else:
+            self.goal_pool = self.words[:goal_pool_size]
 
         self.state = None
         self.guessed = None
@@ -158,92 +161,100 @@ class MinimalWordleEnv(gym.Env):
         self.history = []
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
-        if seed is not None:
-            self.np_random, _ = gym.utils.seeding.np_random(seed)
+        super().reset(seed=seed)
         self.state = new_state(self.max_turns)
         self.guessed = np.zeros(len(self.words), dtype=np.int32)
         self.done = False
-        self.goal_word = self.np_random.choice(self.words)
+        self.goal_word = self.np_random.choice(self.goal_pool)
         self.remaining_candidates = set(self.words)
-        self.prev_entropy = np.log(len(self.remaining_candidates))
+        self.prev_entropy = np.log(len(self.remaining_candidates)) if len(self.remaining_candidates) > 0 else 0.0
         self.history = []
         return {"state": self.state.copy(), "guessed": self.guessed.copy()}, {}
 
     def step(self, action: int):
+        reward = 0
+        if self.guessed[action] == 1:
+            reward += REWARD_REPEAT_PENALTY
+
         guessed_word = self.words[action]
         self.guessed[action] = 1
         mask = get_mask(guessed_word, self.goal_word)
         self.state = update_from_mask(self.state, guessed_word, mask)
-
-        self.remaining_candidates = set([
-            w for w in self.remaining_candidates if get_mask(guessed_word, w) == mask
-        ])
+        self.remaining_candidates = {w for w in self.remaining_candidates if get_mask(guessed_word, w) == mask}
         new_entropy = np.log(len(self.remaining_candidates)) if len(self.remaining_candidates) > 0 else 0.0
-
         entropy_delta = self.prev_entropy - new_entropy
         self.prev_entropy = new_entropy
-        reward = entropy_delta * 10
 
-        if entropy_delta == 0 or guessed_word in [g for g, _ in self.history]:
-            reward += REWARD_REPEAT_PENALTY  
-
-        green_bonus = sum([m == 2 for m in mask])
-        reward += green_bonus
+        reward += entropy_delta * ENTROP_DROP_REWARD
+        green_count = sum(1 for m in mask if m == 2)
+        yellow_count = sum(1 for m in mask if m == 1)
+        reward += GREEN_REWARD * green_count + YELLOW_REWARD * yellow_count
 
         terminated = guessed_word == self.goal_word
         truncated = remaining_steps(self.state) == 0 and not terminated
-
         if terminated:
-            reward += REWARD_WIN
+            scaled_win_reward = REWARD_WIN * (remaining_steps(self.state) + 1) / self.max_turns
+            reward += scaled_win_reward
+        elif truncated:
+            reward += REWARD_LOSE
 
         self.done = terminated or truncated
         self.history.append((guessed_word, mask))
+        return {"state": self.state.copy(), "guessed": self.guessed.copy()}, reward, terminated, truncated, {}
 
-        return {"state": self.state.copy(), "guessed": self.guessed.copy()}, reward, terminated, truncated, {
-            "goal_word": self.goal_word,
-            "guess": guessed_word,
-            "mask": mask,
-            "remaining_candidates": len(self.remaining_candidates),
-            "entropy": self.prev_entropy
-        }
+    def set_goal_pool(self, goal_pool_size: int = None):
+        if goal_pool_size is None or goal_pool_size >= len(self.words):
+            self.goal_pool = self.words
+        else:
+            self.goal_pool = self.words[:goal_pool_size]
 
-class WordleEnv10(MinimalWordleEnv):
-    def __init__(self):
-        super().__init__(words=load_words(10), max_turns=6)
+def WordleEnvFactory(
+    name: str,
+    path: str = "wordle_words.txt",
+    num_words: Optional[int] = None,
+    goal_pool_size: Optional[int] = None,
+    word_seed: Optional[int] = 42
+):
+    """
+    A function to make it easier to create and register Wordle envs of different sizes.
 
-class WordleEnv100(MinimalWordleEnv):
-    def __init__(self):
-        super().__init__(words=load_words(100), max_turns=6)
+    """
+    words = load_words(path=path, num_words=num_words)
+    NewWordleEnv = functools.partial(MinimalWordleEnv, words=words, goal_pool_size=goal_pool_size)
+    gym.envs.registration.register(id=name, entry_point=NewWordleEnv)
+    print(f"Registered environment: {name}")
 
-class WordleEnv500(MinimalWordleEnv):
-    def __init__(self):
-        super().__init__(words=load_words(500), max_turns=6)
+print("--- Registering Wordle Curriculum ---")
 
-class WordleEnv1000(MinimalWordleEnv):
-    def __init__(self):
-        super().__init__(words=load_words(1000), max_turns=6)
+# Basic Curriculum to Train On
+WordleEnvFactory(name="Wordle-v0-10", num_words=10)
+WordleEnvFactory(name="Wordle-v0-100", num_words=100)
+WordleEnvFactory(name="Wordle-v0-1000", num_words=1000)
+WordleEnvFactory(name="Wordle-v0-Full", num_words=None) 
 
-class WordleEnvFull(MinimalWordleEnv):
-    def __init__(self):
-        super().__init__(words=load_words(None), max_turns=6)  
-		
-def register_all_wordle_envs():
-    gym.envs.registration.register(
-        id="Wordle10-v0", entry_point=WordleEnv10
-    )
-    gym.envs.registration.register(
-        id="Wordle100-v0", entry_point=WordleEnv100
-    )
-    gym.envs.registration.register(
-        id="Wordle500-v0", entry_point=WordleEnv500
-    )
-    gym.envs.registration.register(
-        id="Wordle1000-v0", entry_point=WordleEnv1000
-    )
-    gym.envs.registration.register(
-        id="WordleFull-v0", entry_point=WordleEnvFull
-    )
-	
+# For Probe Testing Purposes
+WordleEnvFactory(
+    name="Wordle-v0-100-TwoGoals",
+    num_words=100,
+    goal_pool_size=2,
+    word_seed=1337 
+)
+
+# For Probe Testing Purposes
+WordleEnvFactory(
+    name="Wordle-v0-100-SameGoal",
+    num_words=100,
+    goal_pool_size=1, 
+    word_seed=42
+)
+
+print("--- Registration Complete ---")
+
+def get_inner_env(env):
+    while hasattr(env, "env"):
+        env = env.env
+    return env
+
 def preprocess_obs(obs: dict | t.Tensor | np.ndarray) -> t.Tensor:
     """
     Preprocess observation:
@@ -278,15 +289,11 @@ def preprocess_obs(obs: dict | t.Tensor | np.ndarray) -> t.Tensor:
         obs = obs.to(dtype=t.float32, device=device)
 
     return obs / 2.0
-	
-def get_inner_env(env):
-    while hasattr(env, "env"):
-        env = env.env
-    return env
-
-"""PPO Implementation code, heavily inspired by ARENA's Implementation but tweaked for Wordle:
+    
+"""PPO Implementation code, inspired by ARENA's Implementation but tweaked for Wordle:
 https://arena-chapter2-rl.streamlit.app/. Original comments have been mostly left in and additional comments have been added
 to describe the most important tweaks."""
+
 @dataclass
 class PPOArgs:
 
@@ -923,9 +930,7 @@ class PPOTrainer:
         self.envs.close()
         if self.args.use_wandb:
             wandb.finish()
-			
-register_all_wordle_envs()
-
+            
 def evaluate_agent(agent, env, words, num_episodes=5):
     successes = 0
     total_guesses = 0
@@ -961,7 +966,7 @@ def evaluate_agent(agent, env, words, num_episodes=5):
 
     print(f"\n Success rate: {successes}/{num_episodes} ({100 * successes / num_episodes:.2f}%)")
     print(f" Avg guesses per game: {total_guesses / num_episodes:.2f}")
-	
+    
 def load_partial_state_dict(model: t.nn.Module, checkpoint_path: str, verbose: bool = True):
     """Loads weights from a checkpoint, ignoring any size mismatches (e.g., decoder layers)."""
     checkpoint = t.load(checkpoint_path, map_location=device)
@@ -983,141 +988,205 @@ def load_partial_state_dict(model: t.nn.Module, checkpoint_path: str, verbose: b
 
     model_dict.update(filtered_dict)
     model.load_state_dict(model_dict)
+    
+""" Behavioral Cloning of minimax agent"""
 
+# Precompute Table
 def build_mask_table(words):
     V = len(words)
     mask_ids = np.empty((V, V), dtype=np.int16)
-    for i in range(V):
+    print("Building mask table...")
+    for i in tqdm(range(V)):
         for j in range(V):
-            m = get_mask(words[i], words[j])     
+            m = get_mask(words[i], words[j])
             code = m[0] + 3*(m[1] + 3*(m[2] + 3*(m[3] + 3*m[4])))
             mask_ids[i, j] = code
     return mask_ids
 
-def expected_entropy_drop_fast(env, guess_idx):
-    """
-    Fast O(|C|) expected log‑|C| drop using precomputed mask_table.
-    """
-    C_idxs = np.array([word2idx[w] for w in env.remaining_candidates], dtype=int)
-    old_log = math.log(len(C_idxs))
+def expected_entropy_drop_slow(env, guess_idx, mask_table, word2idx, candidate_indices):
+    old_log = math.log(len(candidate_indices))
+    row = mask_table[guess_idx, candidate_indices]
+    _, counts = np.unique(row, return_counts=True)
+    return ((old_log - np.log(counts)) * (counts / len(candidate_indices))).sum()
 
-    row = mask_table[guess_idx, C_idxs]      
-    vals, counts = np.unique(row, return_counts=True)
-    return ((old_log - np.log(counts)) * (counts / len(C_idxs))).sum()
-
-def expert_action(env):
-    """
-    Scan only remaining candidates; pick index with highest expected drop.
-    """
-    best_idx, best_score = None, -1.0
-    for w in env.remaining_candidates:
-        idx = word2idx[w]
-        score = expected_entropy_drop_fast(env, idx)
+def expert_action_slow(env, mask_table, word2idx):
+    inner_env = get_inner_env(env)
+    candidate_indices = np.array([word2idx[w] for w in inner_env.remaining_candidates], dtype=int)
+    best_idx, best_score = -1, -1.0
+    for idx in range(len(word2idx)):
+        score = expected_entropy_drop_slow(env, idx, mask_table, word2idx, candidate_indices)
         if score > best_score:
             best_score, best_idx = score, idx
     return best_idx
 
-def behavioral_clone(actor, decoder, 
-                     states, actions, 
-                     epochs=5, batch_size=64, lr=1e-3, device='cuda'):
-   
-    actor.train(); decoder.train()
-    optimizer = torch.optim.Adam(
-        list(actor.parameters()) + list(decoder.parameters()), 
-        lr=lr
-    )
-    criterion = nn.CrossEntropyLoss()
+# Opening book to precompute the most expensive moves (first and second)
+def build_opening_book(words, mask_table):
+    word2idx = {w: i for i, w in enumerate(words)}
+    dummy_env = gym.make("Wordle-v0-Full") # assuming this env is already registered
+    dummy_env.reset()
+    
+    print("Finding the best opening word...")
+    best_opening_action = expert_action_slow(dummy_env, mask_table, word2idx)
+    
+    opening_book = {
+        "first_move": best_opening_action,
+        "second_moves": {} 
+    }
+    
+    print("Finding the best second moves...")
+    all_word_indices = np.arange(len(words))
+    
+    for mask_code in tqdm(range(3**5)): # 243 possible 
+        matching_secrets_mask = (mask_table[best_opening_action, :] == mask_code)
+        
+        if not np.any(matching_secrets_mask):
+            continue 
+            
+        candidate_indices = all_word_indices[matching_secrets_mask]
+        
+        if len(candidate_indices) == 1:
+            opening_book["second_moves"][mask_code] = candidate_indices[0]
+            continue
+        
+        dummy_env.remaining_candidates = {words[i] for i in candidate_indices}
+        best_second_action = expert_action_slow(dummy_env, mask_table, word2idx)
+        opening_book["second_moves"][mask_code] = best_second_action
+        
+    print("Finished creating opening book.")
+    return opening_book
 
-    dataset = TensorDataset(states.to(device), actions.to(device))
-    loader  = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    for epoch in range(1, epochs+1):
-        total_loss = 0.0
-        for s_batch, a_batch in loader:
-            logits = decoder(actor(s_batch))      
-            loss   = criterion(logits, a_batch)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item() * s_batch.size(0)
-        avg = total_loss / len(dataset)
-        print(f"[BC] Epoch {epoch}/{epochs} — loss {avg:.4f}")
+def get_expert_action_with_opening_book(env, opening_book, mask_table, word2idx):
+    inner_env = get_inner_env(env)
+    turn_number = len(inner_env.history)
+    
+    if turn_number == 0:
+        return opening_book["first_move"]
+        
+    if turn_number == 1:
+        prev_guess_word, prev_mask = inner_env.history[-1]
+        m = prev_mask
+        mask_code = m[0] + 3*(m[1] + 3*(m[2] + 3*(m[3] + 3*m[4])))
+        
+        if mask_code in opening_book["second_moves"]:
+            return opening_book["second_moves"][mask_code]
+    return expert_action_slow(env, mask_table, word2idx)
 
-args = PPOArgs(
-    env_id="Wordle1000-v0",
-    num_envs=8,
-    total_timesteps=10_000_000,
-    num_steps=128,
-    learning_rate=1e-5,
-    use_wandb=True,
-    seed=1
-)
-trainer = PPOTrainer(args)
-env0 = get_inner_env(trainer.envs.envs[0])  
+def generate_expert_dataset(env, preprocess_obs, opening_book, num_episodes: int = 100):
+    states, actions, ent_drops = [], [], []
+    inner_env = get_inner_env(env)
+    words = inner_env.words
+    word2idx = {w: i for i, w in enumerate(words)}
+    mask_table = build_mask_table(words) 
 
-raw_env = get_inner_env(trainer.envs.envs[0])
-words   = raw_env.words
-word2idx = {w:i for i,w in enumerate(words)}
-mask_table = build_mask_table(words)
+    print(f"Generating expert dataset for {num_episodes} episodes...")
+    for ep in tqdm(range(num_episodes)):
+        obs, _ = env.reset()
+        done = False
+        while not done:
+            s_t = preprocess_obs(obs).cpu()
+            states.append(s_t)
 
-bc_states, bc_actions = generate_expert_dataset(
-    env0, preprocess_obs, num_episodes=200
-)
+            a = get_expert_action_with_opening_book(env, opening_book, mask_table, word2idx)
 
+            actions.append(a)
+            ent_drops.append(0.0)
+
+            obs, _, terminated, truncated, _ = env.step(a)
+            done = terminated or truncated
+
+    states = torch.vstack(states)
+    actions = torch.tensor(actions, dtype=torch.long)
+    ent_drops= torch.tensor(ent_drops, dtype=torch.float32)
+    return states, actions, ent_drops
+    
+
+final_env_args = PPOArgs(env_id="Wordle-v0-Full", num_envs=32, seed=1)
+initial_trainer = PPOTrainer(final_env_args)
+master_agent = initial_trainer.agent
+print("Initialized Full Vocab Master Agent")
+
+words_full = initial_trainer.envs.get_attr("words")[0]
+bc_env = MinimalWordleEnv(words=words_full, goal_pool_size=1000)
+word2idx_full = {w: i for i, w in enumerate(words_full)}
+mask_table_full = build_mask_table(words_full)
+opening_book_full = build_opening_book(words_full, mask_table_full)
+print("Prepared for Warm Start")
+
+device = next(master_agent.parameters()).device
 behavioral_clone(
-    trainer.agent.actor, 
-    trainer.agent.decoder,
-    bc_states, bc_actions,
-    epochs=5, batch_size=128, lr=1e-3,
+    actor=master_agent.actor,
+    decoder=master_agent.decoder,
+    states=bc_states,
+    actions=bc_actions,
+    epochs=5,
+    batch_size=128,
+    lr=1e-3,
     device=device
 )
-
-
-print("Starting PPO finetuning…")
-trainer.train()
-
-CURRICULUM_STAGES = [
-    ("Wordle100-v0", 5_000_000),
-    ("Wordle1000-v0, 5_000_000),
-    ("WordleFull-v0, 5_000_000) 
-]
+print("Warm Start Complete"")
 
 SAVE_DIR = "checkpoints"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-total_steps_so_far = 0
+curriculum = [
+    {
+        "goal_pool_size": 100,
+        "timesteps": 2,
+        "description": "Fine-tune on 100-word goal pool."
+    },
+    {
+        "goal_pool_size": 1000,
+        "timesteps": 3,
+        "description": "Expand to 1000-word goal pool."
+    },
+    {
+        "goal_pool_size": None, # None means we're using full vocab
+        "timesteps": 5,
+        "description": "Generalize to the entire word list."
+    },
+]
 
-for idx, (env_id, stage_steps) in enumerate(CURRICULUM_STAGES):
-    print(f"\n Stage {idx+1}/{len(CURRICULUM_STAGES)}: {env_id} for {stage_steps} steps")
+for i, stage in enumerate(curriculum):
+    stage_id = f"PoolSize-{stage['goal_pool_size'] or 'Full'}"
+    print(f"CURRICULUM STAGE {i+1}/{len(curriculum)}: {stage_id}")
+    print(f"Goal: {stage['description']}")
 
-    args = PPOArgs(
-        env_id=env_id,
-        num_envs=8,
-        total_timesteps=stage_steps,
-        num_steps=128,
-        learning_rate=1e-5,
-        exp_name=f"wordle-curriculum-stage{idx+1}",
-        use_wandb=True,
-        seed=1
+    print(f"Setting environment goal pool size to: {stage['goal_pool_size']}")
+    for env in initial_trainer.envs.envs:
+        env.unwrapped.set_goal_pool(stage['goal_pool_size'])
+
+
+    initial_trainer.args.total_timesteps = stage['timesteps']
+    initial_trainer.args.use_wandb = True
+    initial_trainer.args.exp_name = f"wordle-curriculum-stage{i+1}-{stage_id}"
+
+    if initial_trainer.args.use_wandb:
+        wandb.init(
+            project=initial_trainer.args.wandb_project_name, # Assumes this exists
+            name=initial_trainer.args.exp_name,
+            config=vars(initial_trainer.args),
+        )
+
+    print(f"Starting PPO fine-tuning for {stage['timesteps']:,} steps...")
+    initial_trainer.train()
+
+    master_agent = initial_trainer.agent
+    
+    ckpt_path = os.path.join(SAVE_DIR, f"stage_{i+1}_{stage_id}_agent.pt")
+    torch.save(master_agent.state_dict(), ckpt_path)
+    print(f"Saved model checkpoint to {ckpt_path}")
+
+    evaluate_agent(
+        master_agent, 
+        env_id="Wordle-v0-Full", 
+        num_episodes=100,
+        goal_pool_size=stage['goal_pool_size']
     )
+    
+    if trainer.args.use_wandb:
+        wandb.log(eval_results)
+        wandb.finish()
+    print(f"Stage {i+1} Complete!")
 
-    trainer = PPOTrainer(args)
-
-    if idx > 0:
-        ckpt_path = os.path.join(SAVE_DIR, f"stage{idx}_agent.pt")
-        state_dict = t.load(ckpt_path)
-        load_partial_state_dict(trainer.agent, ckpt_path)
-
-    trainer.train()
-
-    ckpt_path = os.path.join(SAVE_DIR, f"stage{idx+1}_agent.pt")
-    t.save(trainer.agent.state_dict(), ckpt_path)
-    print(f" Saved model to {ckpt_path}")
-
-    print(f"\n Evaluating {env_id} agent after {stage_steps} steps")
-    raw_env = get_inner_env(gym.make(env_id))
-    eval_env = raw_env.__class__()  
-    evaluate_agent(trainer.agent, eval_env, raw_env.words, num_episodes=10)
-
-    total_steps_so_far += stage_steps
-    print(f" Total steps so far: {total_steps_so_far}")
+print("Full Curriculum Training Complete!")
