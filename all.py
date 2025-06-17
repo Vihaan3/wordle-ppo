@@ -1184,8 +1184,8 @@ for i, stage in enumerate(curriculum):
         goal_pool_size=stage['goal_pool_size']
     )
     
-    if trainer.args.use_wandb:
-        wandb.log(eval_results)
+    if initial_trainer.args.use_wandb:
+        wandb.log()
         wandb.finish()
     print(f"Stage {i+1} Complete!")
 
