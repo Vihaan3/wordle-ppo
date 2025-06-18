@@ -1132,17 +1132,17 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 curriculum = [
     {
         "goal_pool_size": 100,
-        "timesteps": 2,
+        "timesteps": 2_000_000,
         "description": "Fine-tune on 100-word goal pool."
     },
     {
         "goal_pool_size": 1000,
-        "timesteps": 3,
+        "timesteps": 3_000_000,
         "description": "Expand to 1000-word goal pool."
     },
     {
         "goal_pool_size": None, # None means we're using full vocab
-        "timesteps": 5,
+        "timesteps": 5_000_000,
         "description": "Generalize to the entire word list."
     },
 ]
