@@ -12,7 +12,4 @@ Changes to make to this implementation:
 - Cut out as many heuristics as possible, especially in terms of encoding state
 - Generally clean up into multiple different files
 
-<figure class="video_container">
-  <iframe src="demo.mp4" frameborder="0" allowfullscreen="true"> 
-</iframe>
-</figure>
+[Demo Video](demo.mp4)
