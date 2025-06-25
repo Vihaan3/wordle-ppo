@@ -12,4 +12,4 @@ Changes to make to this implementation:
 - Cut out as many heuristics as possible, especially in terms of encoding state
 - Generally clean up into multiple different files
 
-[Demo Video](demo.mp4)
+[Demo Video](Screen_Recording_(2).mp4)
