@@ -11,3 +11,8 @@ Changes to make to this implementation:
 - Explore tradeoff between less rich state w/ transformer or recurrent block (given that language is sequential). Or, just project down to a lower dimensional state before dot product with decoder/ use a sparse autoencoder
 - Cut out as many heuristics as possible, especially in terms of encoding state
 - Generally clean up into multiple different files
+
+<figure class="video_container">
+  <iframe src="demo.mp4" frameborder="0" allowfullscreen="true"> 
+</iframe>
+</figure>
